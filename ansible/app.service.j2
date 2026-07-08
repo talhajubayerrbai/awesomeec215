@@ -1,0 +1,25 @@
+[Unit]
+Description=FastAPI Application ({{ service_name }})
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory={{ app_dir }}
+ExecStart={{ venv_dir }}/bin/gunicorn app.main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -w 4 \
+    -b 0.0.0.0:8000 \
+    --access-logfile - \
+    --error-logfile -
+Restart=always
+RestartSec=5
+Environment=PORT=8000
+Environment=APP_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ service_name }}
+
+[Install]
+WantedBy=multi-user.target

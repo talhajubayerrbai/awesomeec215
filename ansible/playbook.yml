@@ -1,0 +1,168 @@
+---
+- name: Configure Python/FastAPI application
+  hosts: all
+  gather_facts: false
+
+  vars:
+    ansible_connection: aws_ssm
+    ansible_aws_ssm_region: "{{ ansible_aws_ssm_region | default('us-east-1') }}"
+    ansible_remote_tmp: /tmp/.ansible.tmp
+    ansible_user: ubuntu
+    app_dir: /opt/app
+    venv_dir: /opt/app/.venv
+    service_name: app
+
+  become: true
+
+  pre_tasks:
+    - name: Wait for system to be reachable via SSM
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+
+    - name: Gather facts after connection
+      ansible.builtin.setup:
+
+  tasks:
+    #  System packages 
+    - name: Update apt cache and install system dependencies
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+          - python3-venv
+          - python3-dev
+          - build-essential
+          - curl
+          - git
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    #  App directory 
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    #  Sync application code 
+    - name: Copy main.py
+      ansible.builtin.copy:
+        src: ../main.py
+        dest: "{{ app_dir }}/main.py"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Copy app/ package
+      ansible.builtin.copy:
+        src: ../app/
+        dest: "{{ app_dir }}/app/"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Copy requirements.txt
+      ansible.builtin.copy:
+        src: ../requirements.txt
+        dest: "{{ app_dir }}/requirements.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    #  Check for optional public/ directory (no delegate_to) 
+    - name: Detect public/ directory on controller
+      ansible.builtin.set_fact:
+        public_exists: "{{ lookup('fileglob', '../public') | length > 0 }}"
+
+    - name: Copy public/ directory if it exists
+      ansible.builtin.copy:
+        src: ../public/
+        dest: "{{ app_dir }}/public/"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+      when: public_exists | bool
+
+    #  Python virtual environment 
+    - name: Create Python virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv "{{ venv_dir }}"
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Set venv ownership to ubuntu
+      ansible.builtin.file:
+        path: "{{ venv_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: true
+
+    - name: Upgrade pip inside venv
+      ansible.builtin.pip:
+        name: pip
+        state: latest
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3
+
+    - name: Install Python requirements
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3
+
+    - name: Install gunicorn and uvicorn inside venv
+      ansible.builtin.pip:
+        name:
+          - gunicorn
+          - uvicorn[standard]
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_python: python3
+
+    #  Systemd service 
+    - name: Create systemd unit file for app service
+      ansible.builtin.template:
+        src: app.service.j2
+        dest: /etc/systemd/system/{{ service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart app service
+
+    #  Ensure app_dir and contents owned by ubuntu 
+    - name: Ensure app directory ownership
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: true
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart app service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+        enabled: true
+
+  post_tasks:
+    - name: Enable and start app service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for app to be listening on port 8000
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 8000
+        delay: 5
+        timeout: 120
+        state: started
