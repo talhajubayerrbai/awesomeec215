@@ -132,9 +132,14 @@ jobs:
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
+          # Reconstruct the SSM bucket name directly from the project name secret.
+          # The bucket name ("<project>-ssm-transfers") matches the PROJECT_NAME secret,
+          # which causes GitHub Actions to mask and drop the inter-job output; rebuilding
+          # it here from the secret avoids that masking entirely.
+          SSM_BUCKET="${{ secrets.PROJECT_NAME }}-ssm-transfers"
           ansible-playbook ansible/playbook.yml \
             -i "${{ needs.provision.outputs.instance_id }}," \
-            -e "ansible_aws_ssm_bucket_name=${{ needs.provision.outputs.ssm_bucket }}" \
+            -e "ansible_aws_ssm_bucket_name=${SSM_BUCKET}" \
             -e "ansible_aws_ssm_region=${{ secrets.AWS_REGION }}"
 
   verify:
